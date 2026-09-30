@@ -738,6 +738,23 @@
               <span class="flex items-center gap-1"><span class="w-1.5 h-1.5 rounded-full bg-sky-500 animate-pulse"></span> Running</span>
               <span class="flex items-center gap-1"><span class="w-1.5 h-1.5 rounded-full bg-stone-300 dark:bg-stone-600"></span> Pending</span>
             </div>
+
+            <!-- Quick horizontal scroll arrows when expanded -->
+            <div x-show="!theaterDagCollapsed" class="flex items-center gap-1">
+              <button type="button" 
+                      @click.stop="$refs.dagScroll && ($refs.dagScroll.scrollLeft -= 220)" 
+                      class="w-5 h-5 rounded-md bg-stone-200/70 hover:bg-stone-300 dark:bg-stone-800 dark:hover:bg-stone-700 text-slate-600 dark:text-stone-300 flex items-center justify-center text-[9px] transition" 
+                      title="Scroll Left">
+                <i class="fa-solid fa-chevron-left"></i>
+              </button>
+              <button type="button" 
+                      @click.stop="$refs.dagScroll && ($refs.dagScroll.scrollLeft += 220)" 
+                      class="w-5 h-5 rounded-md bg-stone-200/70 hover:bg-stone-300 dark:bg-stone-800 dark:hover:bg-stone-700 text-slate-600 dark:text-stone-300 flex items-center justify-center text-[9px] transition" 
+                      title="Scroll Right">
+                <i class="fa-solid fa-chevron-right"></i>
+              </button>
+            </div>
+
             <div class="flex items-center gap-1 text-[10px] text-slate-500 hover:text-slate-700 dark:text-stone-400 dark:hover:text-stone-200 font-mono">
               <span x-text="theaterDagCollapsed ? 'Expand' : 'Collapse'"></span>
               <i class="fa-solid" :class="theaterDagCollapsed ? 'fa-chevron-down' : 'fa-chevron-up'"></i>
@@ -747,7 +764,14 @@
 
         <!-- Node Pipeline Flow (Expanded) -->
         <div x-show="!theaterDagCollapsed" class="px-5 pb-3 pt-1">
-          <div class="flex items-center gap-2 overflow-x-auto pb-1 pt-0.5 no-scrollbar">
+          <div x-ref="dagScroll"
+               x-data="{ isDown: false, startX: 0, scrollLeft: 0 }"
+               @mousedown="isDown = true; startX = $event.pageX - $el.offsetLeft; scrollLeft = $el.scrollLeft"
+               @mouseleave="isDown = false"
+               @mouseup="isDown = false"
+               @mousemove="if (!isDown) return; $event.preventDefault(); const x = $event.pageX - $el.offsetLeft; $el.scrollLeft = scrollLeft - (x - startX);"
+               @wheel="if ($el.scrollWidth > $el.clientWidth) { $event.preventDefault(); $el.scrollLeft += ($event.deltaY * 0.85) || $event.deltaX; }"
+               class="flex items-center gap-2 overflow-x-auto pb-2.5 pt-0.5 cursor-grab active:cursor-grabbing select-none scroll-smooth">
           <!-- Planner Node -->
           <div class="flex items-center gap-2 shrink-0">
             <div class="p-2 rounded-xl border bg-emerald-50 dark:bg-emerald-950/40 border-emerald-300 dark:border-emerald-800/80 flex items-center gap-2 shadow-xs">
