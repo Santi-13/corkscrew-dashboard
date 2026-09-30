@@ -1,0 +1,40 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+agent-env/
+build/
+dist/
+*.egg-info/
+
+# Databases & Runtime State
+*.db
+*.sqlite
+*.sqlite3
+data/
+corkboard.db
+tasks.db
+
+# Agent Task Workspaces & Logs
+tasks/
+logs/
+*.log
+
+# Backups & Editor artifacts
+*.bak
+*.swp
+*.swo
+*~
+.DS_Store
+.idea/
+.vscode/
+
+# Environment Variables & Secrets
+.env
+.env.*
+!.env.example
