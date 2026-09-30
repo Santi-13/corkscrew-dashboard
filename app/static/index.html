@@ -834,6 +834,7 @@
           <div class="flex flex-col rounded-2xl p-4 border text-xs shadow-sm transition group"
                :class="{
                  'bg-blue-50/80 dark:bg-stone-800/90 border-blue-200 dark:border-stone-700 text-slate-800 dark:text-stone-200': event.sender === 'worker',
+                 'bg-cyan-50/70 dark:bg-stone-900/90 border-cyan-200 dark:border-cyan-800/60 text-slate-800 dark:text-stone-200': event.sender === 'deepseek',
                  'bg-purple-50/60 dark:bg-purple-950/30 border-purple-200 dark:border-purple-800/50': event.sender === 'critic',
                  'bg-white dark:bg-stone-900 border-stone-200 dark:border-stone-800': event.sender === 'system',
                  'bg-emerald-50/60 dark:bg-emerald-950/30 border-emerald-200 dark:border-emerald-800/50': event.sender === 'gemini',
@@ -846,6 +847,7 @@
                 <span class="flex items-center gap-1.5"
                       :class="{
                         'text-sapphire dark:text-blue-400': event.sender === 'worker',
+                        'text-cyan-700 dark:text-cyan-300': event.sender === 'deepseek',
                         'text-purple-700 dark:text-purple-300': event.sender === 'critic',
                         'text-slate-600 dark:text-stone-400': event.sender === 'system',
                         'text-emerald-700 dark:text-emerald-300': event.sender === 'gemini',
@@ -853,6 +855,7 @@
                       }">
                   <i class="fa-solid" :class="{
                     'fa-robot': event.sender === 'worker',
+                    'fa-code': event.sender === 'deepseek',
                     'fa-user-check': event.sender === 'critic',
                     'fa-microchip': event.sender === 'system',
                     'fa-wand-magic-sparkles': event.sender === 'gemini',
@@ -1758,6 +1761,7 @@
         isSendingIntervention: false,
 
         async init() {
+          window.corkboardApp = this;
           this.applyDarkMode();
           this.setupMarked();
           await this.loadTasks();
@@ -2349,6 +2353,18 @@
           }
         },
 
+        selectReviewOption(optText) {
+          if (!optText) return;
+          this.interventionText = optText;
+          this.$nextTick(() => {
+            const el = document.querySelector('input[x-model="interventionText"]');
+            if (el) {
+              el.focus();
+              el.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+            }
+          });
+        },
+
         // Revert conversation to event
         async revertTaskToEvent(eventId) {
           if (!this.zoomedTask) return;
@@ -2786,38 +2802,79 @@
 
         getVisibleEvents() {
           if (!this.taskEvents || !this.taskEvents.length) return [];
-          const list = [];
-          const events = this.taskEvents;
-          for (let i = 0; i < events.length; i++) {
-            const ev = events[i];
-            
+          
+          // Helper: Identify if an event is a tool or command execution
+          const isToolAction = (ev) => {
+            if (!ev) return false;
+            if (ev.event_type === "tool_call" || ev.event_type === "command_exec") return true;
+            if (typeof ev.content === "string") {
+              const trimmed = ev.content.trim();
+              if (trimmed.startsWith("$ ") || trimmed.startsWith("run_bash(")) return true;
+              if (trimmed.startsWith("Writing file:") || trimmed.startsWith("Reading file:") || trimmed.startsWith("Listing files:")) return true;
+            }
+            return false;
+          };
+
+          // Pass 1: Deduplicate consecutive identical messages and pair tool calls with their results
+          const intermediate = [];
+          const rawEvents = this.taskEvents;
+          for (let i = 0; i < rawEvents.length; i++) {
+            const ev = rawEvents[i];
+
             // Deduplicate consecutive identical messages (e.g. repeated user messages or status notifications)
-            if (list.length > 0) {
-              const last = list[list.length - 1];
+            if (intermediate.length > 0) {
+              const last = intermediate[intermediate.length - 1];
               if (last.sender === ev.sender && last.event_type === ev.event_type && last.content === ev.content) {
                 continue;
               }
             }
 
-            const isToolOrCmd = ev.event_type === "tool_call" || 
-                                ev.event_type === "command_exec" || 
-                                (ev.content && (ev.content.trim().startsWith("$ ") || ev.content.trim().startsWith("run_bash(")));
-
-            if (isToolOrCmd) {
-              const next = events[i + 1];
+            if (isToolAction(ev)) {
+              const next = rawEvents[i + 1];
               if (next && (next.event_type === "tool_result" || next.event_type === "command_result")) {
-                list.push({
+                intermediate.push({
                   ...ev,
                   attached_result: next.content,
                   attached_result_id: next.id
                 });
-                i++; // Skip the next tool_result event so it doesn't render as a separate bubble
+                i++; // Skip the next tool_result event so it pairs into one unit
                 continue;
               }
             }
 
-            list.push(ev);
+            intermediate.push(ev);
           }
+
+          // Pass 2: Conglomerate consecutive tool actions (>= 2) into segmented tool_group
+          const list = [];
+          for (let j = 0; j < intermediate.length; j++) {
+            const current = intermediate[j];
+
+            if (isToolAction(current)) {
+              const group = [current];
+              let k = j + 1;
+              while (k < intermediate.length && isToolAction(intermediate[k]) && intermediate[k].sender === current.sender) {
+                group.push(intermediate[k]);
+                k++;
+              }
+
+              if (group.length >= 2) {
+                list.push({
+                  id: "group_" + current.id,
+                  sender: current.sender,
+                  event_type: "tool_group",
+                  created_at: current.created_at,
+                  items: group,
+                  content: `Ran ${group.length} tool actions`
+                });
+                j = k - 1; // Advance loop to the end of the group
+                continue;
+              }
+            }
+
+            list.push(current);
+          }
+
           return list;
         },
 
@@ -2882,8 +2939,243 @@
         },
 
         renderEventContent(event) {
-          if (!event || !event.content) return "";
-          const raw = event.content;
+          if (!event || (!event.content && !event.items)) return "";
+          const raw = event.content || "";
+
+          // Tool Group: Conglomerated consecutive tool actions segmented into clean collapsible levels
+          if (event.event_type === "tool_group") {
+            const items = event.items || [];
+            let cmdCount = 0;
+            let fileCount = 0;
+            let otherCount = 0;
+            let hasAnyError = false;
+
+            for (const item of items) {
+              const isCmd = item.event_type === "command_exec" || 
+                            (item.content && (item.content.trim().startsWith("$ ") || item.content.trim().startsWith("run_bash(")));
+              if (isCmd) {
+                cmdCount++;
+              } else if (item.content && (item.content.startsWith("Writing file:") || item.content.startsWith("Reading file:") || item.content.startsWith("Listing files:"))) {
+                fileCount++;
+              } else {
+                otherCount++;
+              }
+
+              const res = item.attached_result || "";
+              let itemHasError = /exit code:\s*[1-9]/i.test(res);
+              try {
+                if (typeof res === "string" && res.trim().startsWith("{") && res.trim().endsWith("}")) {
+                  const p = JSON.parse(res);
+                  if (p.exit_code !== undefined && p.exit_code !== 0) itemHasError = true;
+                  if (p.success === false) itemHasError = true;
+                }
+              } catch(e) {}
+              if (itemHasError) hasAnyError = true;
+            }
+
+            let groupTitle = "";
+            if (cmdCount > 0 && fileCount === 0 && otherCount === 0) {
+              groupTitle = `Ran ${cmdCount} terminal command${cmdCount > 1 ? 's' : ''}`;
+            } else if (fileCount > 0 && cmdCount === 0 && otherCount === 0) {
+              groupTitle = `Executed ${fileCount} file operation${fileCount > 1 ? 's' : ''}`;
+            } else {
+              const parts = [];
+              if (cmdCount > 0) parts.push(`${cmdCount} command${cmdCount > 1 ? 's' : ''}`);
+              if (fileCount > 0) parts.push(`${fileCount} file op${fileCount > 1 ? 's' : ''}`);
+              if (otherCount > 0) parts.push(`${otherCount} action${otherCount > 1 ? 's' : ''}`);
+              groupTitle = `Ran ${items.length} operations (${parts.join(", ")})`;
+            }
+
+            const subItemsHtml = items.map((item, idx) => {
+              const isCmd = item.event_type === "command_exec" || 
+                            (item.content && (item.content.trim().startsWith("$ ") || item.content.trim().startsWith("run_bash(")));
+              const res = item.attached_result || "";
+              let isSuccess = /exit code:\s*0/i.test(res);
+              let hasError = /exit code:\s*[1-9]/i.test(res) || /error/i.test(res);
+              let outputText = res;
+
+              try {
+                if (typeof res === "string" && res.trim().startsWith("{") && res.trim().endsWith("}")) {
+                  const p = JSON.parse(res);
+                  if (p.exit_code !== undefined) {
+                    isSuccess = p.exit_code === 0;
+                    hasError = p.exit_code !== 0;
+                  }
+                  if (p.output !== undefined) outputText = p.output;
+                  else if (p.error) outputText = "Error: " + p.error;
+                  else if (p.path) outputText = (p.success ? "File updated: " : "Error at: ") + p.path;
+                }
+              } catch(e) {}
+
+              if (isCmd) {
+                let cmdText = item.content || "";
+                if (cmdText.startsWith("run_bash(")) {
+                  const m = cmdText.match(/^run_bash\(([\s\S]*)\)$/);
+                  cmdText = m ? m[1] : cmdText.slice(9, -1);
+                }
+                if (!cmdText.trim().startsWith("$ ")) {
+                  cmdText = "$ " + cmdText.trim();
+                }
+
+                const oneLinerCmd = cmdText.length > 70 ? (cmdText.slice(0, 67) + '...') : cmdText;
+                const badgeClass = isSuccess 
+                  ? 'bg-emerald-950/80 text-emerald-400 border border-emerald-800/60' 
+                  : (hasError ? 'bg-rose-950/80 text-rose-400 border border-rose-800/60' : 'bg-stone-800 text-stone-400 border border-stone-700');
+                const badgeText = isSuccess ? 'Exit 0' : (hasError ? 'Error' : 'Output');
+                const encOutput = encodeURIComponent(outputText);
+
+                return `
+                  <details class="group/subitem rounded-lg bg-stone-950 border border-stone-800/70 overflow-hidden" ${hasError ? 'open' : ''}>
+                    <summary class="px-3 py-1.5 flex items-center justify-between cursor-pointer hover:bg-stone-900/60 transition select-none text-[10px] text-stone-300">
+                      <div class="flex items-center gap-2 truncate pr-2">
+                        <i class="fa-solid fa-chevron-right text-[8px] transition-transform duration-150 group-open/subitem:rotate-90 text-stone-500 shrink-0"></i>
+                        <i class="fa-solid fa-terminal text-[8px] text-emerald-400 shrink-0"></i>
+                        <span class="text-stone-300 truncate font-mono">${this.escapeHtml(oneLinerCmd)}</span>
+                      </div>
+                      <span class="px-1.5 py-0.2 rounded text-[9px] font-semibold shrink-0 ${badgeClass}">${badgeText}</span>
+                    </summary>
+                    <div class="border-t border-stone-800/60 bg-stone-950 p-2.5 space-y-1.5 text-[10px]">
+                      ${cmdText.length > 70 ? `<div class="font-mono text-emerald-400 whitespace-pre-wrap">${this.escapeHtml(cmdText)}</div>` : ''}
+                      ${outputText ? `
+                        <div class="text-stone-400 font-mono text-[9px] flex items-center justify-between pt-1 border-t border-stone-800/50">
+                          <span>Output:</span>
+                          <button type="button" onclick="navigator.clipboard.writeText(decodeURIComponent('${encOutput}')); this.innerText='Copied!'; setTimeout(() => this.innerText='Copy', 1500);" class="hover:text-white px-2 py-0.5 rounded bg-stone-800 hover:bg-stone-700 transition text-[9px] text-stone-300">Copy</button>
+                        </div>
+                        <div class="p-2 rounded bg-stone-900/80 text-stone-300 font-mono text-[10px] whitespace-pre-wrap overflow-x-auto max-h-52 overflow-y-auto leading-relaxed border border-stone-800/60">${this.escapeHtml(outputText)}</div>
+                      ` : '<div class="text-stone-500 italic text-[10px]">No output recorded</div>'}
+                    </div>
+                  </details>
+                `;
+              } else {
+                const label = item.content || "Tool Action";
+                const oneLinerLabel = label.length > 70 ? (label.slice(0, 67) + '...') : label;
+                const encOutput = encodeURIComponent(outputText);
+
+                return `
+                  <details class="group/subitem rounded-lg bg-stone-950 border border-stone-800/70 overflow-hidden" ${hasError ? 'open' : ''}>
+                    <summary class="px-3 py-1.5 flex items-center justify-between cursor-pointer hover:bg-stone-900/60 transition select-none text-[10px] text-stone-300">
+                      <div class="flex items-center gap-2 truncate pr-2">
+                        <i class="fa-solid fa-chevron-right text-[8px] transition-transform duration-150 group-open/subitem:rotate-90 text-stone-500 shrink-0"></i>
+                        <i class="fa-solid fa-file-pen text-[9px] text-blue-400 shrink-0"></i>
+                        <span class="text-stone-300 truncate font-mono">${this.escapeHtml(oneLinerLabel)}</span>
+                      </div>
+                      <span class="px-1.5 py-0.2 rounded text-[9px] font-semibold shrink-0 bg-blue-950/80 text-blue-300 border border-blue-800/60">File</span>
+                    </summary>
+                    <div class="border-t border-stone-800/60 bg-stone-950 p-2.5 space-y-1.5 text-[10px]">
+                      ${label.length > 70 ? `<div class="font-mono text-blue-300 whitespace-pre-wrap">${this.escapeHtml(label)}</div>` : ''}
+                      ${outputText ? `
+                        <div class="p-2 rounded bg-stone-900/80 text-stone-300 font-mono text-[10px] whitespace-pre-wrap overflow-x-auto max-h-52 overflow-y-auto leading-relaxed border border-stone-800/60">${this.escapeHtml(outputText)}</div>
+                      ` : '<div class="text-stone-500 italic text-[10px]">Completed</div>'}
+                    </div>
+                  </details>
+                `;
+              }
+            }).join("");
+
+            return `
+              <details class="group/toolgroup my-2 rounded-xl bg-stone-950 text-stone-200 border border-stone-800 font-mono text-[11px] overflow-hidden shadow-sm" ${hasAnyError ? 'open' : ''}>
+                <summary class="px-3.5 py-2 flex items-center justify-between cursor-pointer hover:bg-stone-900/80 transition select-none bg-stone-950">
+                  <div class="flex items-center gap-2">
+                    <i class="fa-solid fa-chevron-right text-[9px] transition-transform duration-150 group-open/toolgroup:rotate-90 text-stone-500"></i>
+                    <i class="fa-solid fa-layer-group text-sapphire text-[10px]"></i>
+                    <span class="font-semibold text-stone-200">${this.escapeHtml(groupTitle)}</span>
+                    ${hasAnyError 
+                      ? '<span class="px-1.5 py-0.2 rounded text-[9px] font-semibold bg-rose-950/80 text-rose-400 border border-rose-800/60">Needs Attention</span>' 
+                      : '<span class="px-1.5 py-0.2 rounded text-[9px] font-semibold bg-emerald-950/80 text-emerald-400 border border-emerald-800/60">Exit 0</span>'}
+                  </div>
+                  <div class="flex items-center gap-2">
+                    <span class="text-stone-500 text-[9px] font-sans group-open/toolgroup:hidden">Click to expand</span>
+                    <span class="text-stone-500 text-[9px] font-sans hidden group-open/toolgroup:inline">Click to collapse</span>
+                  </div>
+                </summary>
+                <div class="border-t border-stone-800/80 bg-stone-900/40 p-2 space-y-1.5">
+                  ${subItemsHtml}
+                </div>
+              </details>
+            `;
+          }
+
+          // Human Review Briefing: Punctual questions & options consultation card
+          if (event.event_type === "review_briefing") {
+            const cleanBriefing = this.cleanMarkdownMetaTags(raw);
+            let renderedMd = "";
+            try {
+              if (typeof marked !== "undefined" && typeof marked.parse === "function") {
+                if (!this.markedConfigured) this.setupMarked();
+                renderedMd = marked.parse(cleanBriefing);
+              } else {
+                renderedMd = this.fallbackMarkdownParse(cleanBriefing);
+              }
+            } catch(e) {
+              renderedMd = this.fallbackMarkdownParse(cleanBriefing);
+            }
+
+            // Extract Option lines:
+            // Matches: - **Option A (Recommended)**: Fix X... or 1. **Option B**: Skip Y...
+            const options = [];
+            const regex = /(?:^|\n)\s*(?:[-*]|\d+\.)\s*\*\*(Option\s+[A-Z][^\*]*)\*\*:\s*([^\n\r]+)/gi;
+            let match;
+            while ((match = regex.exec(cleanBriefing)) !== null) {
+              options.push({
+                label: match[1].trim(),
+                desc: match[2].trim(),
+                isRecommended: /recommended/i.test(match[1])
+              });
+            }
+
+            let optionsHtml = "";
+            if (options.length > 0) {
+              const buttons = options.map(opt => {
+                const fullText = `Proceed with ${opt.label}: ${opt.desc}`;
+                const encText = encodeURIComponent(fullText);
+                const isRec = opt.isRecommended;
+                return `
+                  <button 
+                    type="button" 
+                    onclick="window.corkboardApp?.selectReviewOption(decodeURIComponent('${encText}'))" 
+                    class="flex-1 min-w-[220px] p-2.5 rounded-xl border text-left transition select-none ${
+                      isRec 
+                        ? 'bg-amber-50 hover:bg-amber-100/90 dark:bg-amber-950/40 dark:hover:bg-amber-900/50 border-amber-300 dark:border-amber-700/80 shadow-sm' 
+                        : 'bg-white hover:bg-stone-100 dark:bg-stone-900 dark:hover:bg-stone-800 border-stone-300 dark:border-stone-700'
+                    }">
+                    <div class="flex items-center gap-1.5 font-bold text-[11px] ${isRec ? 'text-amber-800 dark:text-amber-300' : 'text-slate-800 dark:text-stone-200'}">
+                      <i class="fa-solid ${isRec ? 'fa-star text-amber-500' : 'fa-circle-arrow-right text-stone-400'} text-[10px]"></i>
+                      <span>${this.escapeHtml(opt.label)}</span>
+                      ${isRec ? '<span class="text-[9px] px-1.5 py-0.2 rounded-full bg-amber-200/80 dark:bg-amber-900/80 text-amber-900 dark:text-amber-200 uppercase tracking-wider font-semibold">Recommended</span>' : ''}
+                    </div>
+                    <div class="mt-1 text-[10px] text-slate-600 dark:text-stone-300 line-clamp-2">${this.escapeHtml(opt.desc)}</div>
+                  </button>
+                `;
+              }).join("");
+
+              optionsHtml = `
+                <div class="mt-3 pt-3 border-t border-purple-200/70 dark:border-purple-800/60">
+                  <div class="text-[10px] font-semibold text-purple-900 dark:text-purple-300 flex items-center gap-1 mb-2">
+                    <i class="fa-solid fa-hand-pointer text-sapphire"></i>
+                    <span>Click an option to prefill guidance:</span>
+                  </div>
+                  <div class="flex flex-wrap gap-2">
+                    ${buttons}
+                  </div>
+                </div>
+              `;
+            }
+
+            return `
+              <div class="p-4 rounded-2xl bg-gradient-to-br from-purple-50/80 via-white to-amber-50/40 dark:from-purple-950/40 dark:via-stone-900 dark:to-amber-950/20 border border-purple-200 dark:border-purple-800/60 shadow-sm">
+                <div class="flex items-center gap-2 mb-2.5 pb-2 border-b border-purple-200/50 dark:border-purple-800/40">
+                  <span class="w-6 h-6 rounded-lg bg-purple-600 text-white flex items-center justify-center text-xs shrink-0 shadow-sm">
+                    <i class="fa-solid fa-clipboard-question"></i>
+                  </span>
+                  <span class="font-bold text-xs text-purple-950 dark:text-purple-200">Human Supervisor Decision Required</span>
+                </div>
+                <div class="markdown-content font-sans leading-relaxed text-slate-900 dark:text-stone-200">
+                  ${renderedMd}
+                </div>
+                ${optionsHtml}
+              </div>
+            `;
+          }
 
           // Simple, clean terminal command display with collapsible result appendage
           const isRunBash = raw.startsWith("run_bash(");

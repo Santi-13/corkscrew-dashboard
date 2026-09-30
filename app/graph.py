@@ -5,6 +5,7 @@ from agents import (
     DeepSeekExecutorAgent,
     LocalGruntAgent,
     CriticAgent,
+    SteeringAgent,
     evaluate_with_gemini,
     WorkerAgent
 )
@@ -170,19 +171,50 @@ def auditor_node(state: AgentTaskState) -> AgentTaskState:
     else:
         if state["iteration"] < state["max_iterations"]:
             on_event("system", "status", f"Revising task (Iteration {state['iteration']}/{state['max_iterations']})...")
-            # Create a focused revision subtask
+            
+            # Supreme Orchestrator reasons through critique to formulate concrete technical directives
+            steering_agent = SteeringAgent(
+                gemini_key=state.get("gemini_api_key", ""),
+                deepseek_key=state.get("deepseek_api_key", ""),
+                gemini_model=state.get("gemini_model_name") or "gemini-3.8-flash"
+            )
+            directives = steering_agent.formulate_revision_directives(
+                goal=state["task_prompt"],
+                critique=eval_res.get("critique", ""),
+                actions_log=state.get("actions_log", []),
+                on_event=on_event,
+                on_stream=on_stream
+            )
+
+            # Create focused revision subtask based on orchestrator directives
             state["subtasks"] = [{
                 "id": len(state["subtasks"]) + 1,
-                "title": "Address Critic Feedback",
-                "instruction": f"Fix the following issues flagged by the auditor:\n{eval_res.get('critique')}",
+                "title": f"Address Critic Feedback (Iteration {state['iteration']})",
+                "instruction": directives,
                 "task_type": "tool",
-                "expected_deliverable": "Corrected and verified files"
+                "expected_deliverable": "Corrected and verified files addressing auditor critique"
             }]
             state["subtask_index"] = 0
+            on_subtasks = state.get("on_subtasks")
+            if on_subtasks:
+                on_subtasks(state["subtasks"])
         else:
             state["status"] = "needs_review"
-            state["result_summary"] = f"Needs human review:\n{eval_res.get('critique')}"
-            on_event("system", "needs_review", "Max iterations reached. Awaiting human input.")
+            on_event("system", "status", "Max autonomous revision cycles reached. Formulating Human Review Briefing...")
+            steering_agent = SteeringAgent(
+                gemini_key=state.get("gemini_api_key", ""),
+                deepseek_key=state.get("deepseek_api_key", ""),
+                gemini_model=state.get("gemini_model_name") or "gemini-3.8-flash"
+            )
+            briefing = steering_agent.generate_human_review_briefing(
+                goal=state["task_prompt"],
+                deliverables=full_deliverables,
+                critique=eval_res.get("critique", ""),
+                on_event=on_event,
+                on_stream=on_stream
+            )
+            state["result_summary"] = briefing
+            on_event("system", "needs_review", "Task paused for human supervisor steering.")
 
     return state
 

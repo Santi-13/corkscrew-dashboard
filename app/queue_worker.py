@@ -115,8 +115,7 @@ class TaskQueueWorker:
         if len(worker_history) > 9:
             worker_history = [worker_history[0]] + worker_history[-8:]
 
-        current_iter = task.get("iteration", 0)
-        target_max_iters = max(max_iters, current_iter + 3)
+        past_iterations = task.get("iteration", 0)
 
         def on_subtasks_sync(subtasks: List[Dict[str, Any]]):
             async def _update_subs():
@@ -132,8 +131,8 @@ class TaskQueueWorker:
             "task_id": task_id,
             "task_prompt": task["description"],
             "cwd": str(task_dir),
-            "iteration": current_iter,
-            "max_iterations": target_max_iters,
+            "iteration": 0,
+            "max_iterations": max_iters,
             "subtasks": [],
             "subtask_index": 0,
             "subtask_results": [],
@@ -159,9 +158,10 @@ class TaskQueueWorker:
             
             final_status = final_state.get("status", "completed")
             summary = final_state.get("result_summary") or final_state.get("worker_result", {}).get("final_answer", "")
-            iteration = final_state.get("iteration", 0)
+            run_iterations = final_state.get("iteration", 0)
+            total_iterations = past_iterations + run_iterations
 
-            await db.update_task_status(task_id, final_status, result_summary=summary, iteration=iteration)
+            await db.update_task_status(task_id, final_status, result_summary=summary, iteration=total_iterations)
             await broadcast_event({
                 "type": "task_updated",
                 "task_id": task_id,

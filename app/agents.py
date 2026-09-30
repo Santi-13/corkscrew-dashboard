@@ -86,6 +86,28 @@ Critique:
 1. <specific flaw or missing requirement with actionable instruction>
 """
 
+STEERING_SYSTEM_PROMPT = """You are the Supreme Orchestrator (Tier 1 Lead AI Architect).
+The QA Auditor has reviewed the deliverable and requested revisions.
+Analyze the auditor's critique, the original goal, and recent execution actions.
+Formulate clear, concrete, and directly actionable technical directives for the coding executor agent (DeepSeek) to resolve each point of critique.
+Be precise: specify exactly which files to edit, which tests to run, or which commands to execute.
+Keep the directive actionable, focused, and structured."""
+
+REVIEW_BRIEFING_SYSTEM_PROMPT = """You are the Supreme Orchestrator (Tier 1 Lead AI Architect).
+The agent has executed its maximum autonomous revision cycles and now requires human supervisor guidance to proceed.
+Synthesize the remaining contested points into a clean, punctual consultation briefing for the user.
+Structure your output as follows:
+### 📋 Human Supervisor Decision Required
+
+**Current Status**: (1-2 sentences summarizing what was accomplished and what remains contested).
+
+#### Key Questions & Trade-offs:
+1. **[Question Title]**: [Brief explanation of the dilemma or decision needed]
+   - **Option A (Recommended)**: [Concrete recommendation and rationale]
+   - **Option B**: [Alternative approach]
+
+Please reply with your preferred option (e.g. "Option A") or custom steering directives to continue."""
+
 class PlannerAgent:
     """Decomposes goals into a structured DAG of subtasks using Gemini (failing over to DeepSeek)."""
     def __init__(self, gemini_key: str = "", deepseek_key: str = "", gemini_model: str = "gemini-3.7-flash"):
@@ -433,6 +455,150 @@ Critique the deliverable and output your final verdict (VERDICT: APPROVED or VER
 
         # 3. Fallback: approve if deliverables were produced
         return {"approved": True, "critique": "Approved via fallback verification."}
+
+class SteeringAgent:
+    """Uses Gemini (with DeepSeek fallback) to formulate corrective directives and human review briefings."""
+    def __init__(self, gemini_key: str = "", deepseek_key: str = "", gemini_model: str = "gemini-3.8-flash"):
+        self.gemini_key = gemini_key or GEMINI_API_KEY
+        self.deepseek_key = deepseek_key or DEEPSEEK_API_KEY
+        self.gemini_model = gemini_model
+
+    def formulate_revision_directives(
+        self,
+        goal: str,
+        critique: str,
+        actions_log: List[Dict[str, Any]],
+        on_event: Callable[[str, str, str], None],
+        on_stream: Optional[Callable[[str, str], None]] = None
+    ) -> str:
+        prompt = f"""OVERARCHING GOAL:
+{goal}
+
+AUDITOR CRITIQUE / ISSUES FLAGGED:
+{critique}
+
+RECENT ACTIONS TAKEN:
+{json.dumps(actions_log[-6:], indent=2) if actions_log else 'Initial subtasks completed.'}
+
+Provide concrete, step-by-step corrective directives for the executor agent to fix these issues."""
+
+        # 1. Try Gemini
+        if self.gemini_key and failover_mgr.can_use_gemini():
+            candidate_models = [self.gemini_model, "gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.5-flash"]
+            seen = set()
+            for m in candidate_models:
+                if m in seen:
+                    continue
+                seen.add(m)
+                try:
+                    on_event("gemini", "status", f"Supreme Orchestrator (Gemini {m}) reasoning through critique...")
+                    client = genai.Client(api_key=self.gemini_key)
+                    res = client.models.generate_content(
+                        model=m,
+                        contents=prompt,
+                        config=types.GenerateContentConfig(
+                            system_instruction=STEERING_SYSTEM_PROMPT,
+                            temperature=0.3
+                        )
+                    )
+                    text = res.text.strip()
+                    on_event("gemini", "steering", text)
+                    return text
+                except Exception as e:
+                    err_str = str(e)
+                    if "RESOURCE_EXHAUSTED" in err_str or "429" in err_str:
+                        failover_mgr.trip_gemini("429 Quota Exhausted")
+                        on_event("system", "failover", "Gemini Free Tier quota exhausted. Failing over to DeepSeek for Steering...")
+                        break
+
+        # 2. Failover to DeepSeek
+        if self.deepseek_key:
+            try:
+                on_event("deepseek", "status", "Supreme Orchestrator (DeepSeek API) reasoning through critique...")
+                client = OpenAI(api_key=self.deepseek_key, base_url=DEEPSEEK_BASE_URL)
+                res = client.chat.completions.create(
+                    model=DEEPSEEK_DEFAULT_MODEL,
+                    messages=[
+                        {"role": "system", "content": STEERING_SYSTEM_PROMPT},
+                        {"role": "user", "content": prompt}
+                    ]
+                )
+                text = res.choices[0].message.content.strip()
+                on_event("deepseek", "steering", text)
+                return text
+            except Exception as e:
+                on_event("system", "error", f"DeepSeek steering error: {e}")
+
+        return f"Address the following auditor critique directly:\n{critique}"
+
+    def generate_human_review_briefing(
+        self,
+        goal: str,
+        deliverables: str,
+        critique: str,
+        on_event: Callable[[str, str, str], None],
+        on_stream: Optional[Callable[[str, str], None]] = None
+    ) -> str:
+        prompt = f"""OVERARCHING GOAL:
+{goal}
+
+COMPLETED DELIVERABLES:
+{deliverables[:1500]}
+
+UNRESOLVED AUDITOR CRITIQUE:
+{critique}
+
+Generate the Human Supervisor Decision Briefing with punctual questions, options, and recommended paths."""
+
+        # 1. Try Gemini
+        if self.gemini_key and failover_mgr.can_use_gemini():
+            candidate_models = [self.gemini_model, "gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.5-flash"]
+            seen = set()
+            for m in candidate_models:
+                if m in seen:
+                    continue
+                seen.add(m)
+                try:
+                    on_event("gemini", "status", f"Formulating Human Review Briefing via Gemini ({m})...")
+                    client = genai.Client(api_key=self.gemini_key)
+                    res = client.models.generate_content(
+                        model=m,
+                        contents=prompt,
+                        config=types.GenerateContentConfig(
+                            system_instruction=REVIEW_BRIEFING_SYSTEM_PROMPT,
+                            temperature=0.3
+                        )
+                    )
+                    text = res.text.strip()
+                    on_event("gemini", "review_briefing", text)
+                    return text
+                except Exception as e:
+                    err_str = str(e)
+                    if "RESOURCE_EXHAUSTED" in err_str or "429" in err_str:
+                        failover_mgr.trip_gemini("429 Quota Exhausted")
+                        break
+
+        # 2. Failover to DeepSeek
+        if self.deepseek_key:
+            try:
+                on_event("deepseek", "status", "Formulating Human Review Briefing via DeepSeek API...")
+                client = OpenAI(api_key=self.deepseek_key, base_url=DEEPSEEK_BASE_URL)
+                res = client.chat.completions.create(
+                    model=DEEPSEEK_DEFAULT_MODEL,
+                    messages=[
+                        {"role": "system", "content": REVIEW_BRIEFING_SYSTEM_PROMPT},
+                        {"role": "user", "content": prompt}
+                    ]
+                )
+                text = res.choices[0].message.content.strip()
+                on_event("deepseek", "review_briefing", text)
+                return text
+            except Exception as e:
+                on_event("system", "error", f"DeepSeek review briefing error: {e}")
+
+        fallback_briefing = f"### 📋 Human Supervisor Decision Required\n\n**Contested Issues**:\n{critique}\n\nPlease provide guidance on how to resolve the remaining critique."
+        on_event("system", "review_briefing", fallback_briefing)
+        return fallback_briefing
 
 # Backward compatibility wrappers
 class WorkerAgent:
