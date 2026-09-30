@@ -240,14 +240,51 @@ class DeepSeekExecutorAgent:
                 except Exception:
                     t_args = {}
 
-                arg_summary = t_args.get("command") or t_args.get("filename") or t_args.get("query") or ""
-                on_event("deepseek", "tool_call", f"{t_name}({arg_summary})")
-
                 # Execute tool safely
                 res = tools.execute_tool(t_name, t_args, cwd=cwd)
                 res_content = json.dumps(res, indent=2)
-                res_snippet = res_content[:300] + ("..." if len(res_content) > 300 else "")
-                on_event("deepseek", "tool_result", res_snippet)
+
+                if t_name == "run_bash":
+                    cmd = t_args.get("command", "")
+                    on_event("deepseek", "command_exec", f"$ {cmd}")
+                    exit_code = res.get("exit_code", 0)
+                    out = res.get("output", "").strip() or "[No output]"
+                    res_display = f"Exit code: {exit_code}\nOutput:\n{out}"
+                    on_event("deepseek", "command_result", res_display)
+                    res_snippet = res_display[:300]
+                elif t_name == "write_file":
+                    fn = t_args.get("filename", "")
+                    on_event("deepseek", "tool_call", f"write_file: {fn}")
+                    if res.get("success"):
+                        res_display = f"Successfully wrote {fn}"
+                    else:
+                        res_display = f"Failed to write {fn}: {res.get('error', 'Unknown error')}"
+                    on_event("deepseek", "tool_result", res_display)
+                    res_snippet = res_display
+                elif t_name == "read_file":
+                    fn = t_args.get("filename", "")
+                    on_event("deepseek", "tool_call", f"read_file: {fn}")
+                    if res.get("success"):
+                        content_str = res.get("content", "")
+                        lines_cnt = len(content_str.splitlines())
+                        res_display = f"Read {lines_cnt} lines from {fn}"
+                    else:
+                        res_display = f"Error reading {fn}: {res.get('error', 'File not found')}"
+                    on_event("deepseek", "tool_result", res_display)
+                    res_snippet = res_display
+                elif t_name == "search_web":
+                    query = t_args.get("query", "")
+                    on_event("deepseek", "tool_call", f"search_web: {query}")
+                    results = res.get("results", [])
+                    res_display = f"Found {len(results)} search results for '{query}'"
+                    on_event("deepseek", "tool_result", res_display)
+                    res_snippet = res_display
+                else:
+                    arg_summary = t_args.get("command") or t_args.get("filename") or t_args.get("query") or ""
+                    on_event("deepseek", "tool_call", f"{t_name}({arg_summary})")
+                    res_display = res.get("output") or res_content[:300]
+                    on_event("deepseek", "tool_result", res_display)
+                    res_snippet = res_display
 
                 actions_taken.append({
                     "tool": t_name,

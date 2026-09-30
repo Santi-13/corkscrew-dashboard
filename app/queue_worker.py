@@ -61,10 +61,11 @@ class TaskQueueWorker:
 
         def on_event_sync(sender: str, event_type: str, content: str):
             async def _record():
-                await db.add_task_event(task_id, sender, event_type, content)
+                event_id = await db.add_task_event(task_id, sender, event_type, content)
                 await broadcast_event({
                     "type": "agent_event",
                     "task_id": task_id,
+                    "event_id": event_id,
                     "sender": sender,
                     "event_type": event_type,
                     "content": content

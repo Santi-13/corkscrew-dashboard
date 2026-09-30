@@ -121,14 +121,15 @@ async def update_task_status(task_id: int, status: str, result_summary: Optional
         await db.execute(query, params)
         await db.commit()
 
-async def add_task_event(task_id: int, sender: str, event_type: str, content: str):
+async def add_task_event(task_id: int, sender: str, event_type: str, content: str) -> int:
     now = datetime.now().isoformat()
     async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute("""
+        cursor = await db.execute("""
             INSERT INTO task_events (task_id, sender, event_type, content, created_at)
             VALUES (?, ?, ?, ?, ?)
         """, (task_id, sender, event_type, content, now))
         await db.commit()
+        return cursor.lastrowid
 
 async def get_task_events(task_id: int) -> List[Dict[str, Any]]:
     async with aiosqlite.connect(DB_PATH) as db:

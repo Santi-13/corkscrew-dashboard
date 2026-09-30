@@ -2791,9 +2791,17 @@
           for (let i = 0; i < events.length; i++) {
             const ev = events[i];
             
+            // Deduplicate consecutive identical messages (e.g. repeated user messages or status notifications)
+            if (list.length > 0) {
+              const last = list[list.length - 1];
+              if (last.sender === ev.sender && last.event_type === ev.event_type && last.content === ev.content) {
+                continue;
+              }
+            }
+
             const isToolOrCmd = ev.event_type === "tool_call" || 
                                 ev.event_type === "command_exec" || 
-                                (ev.content && ev.content.trim().startsWith("$ "));
+                                (ev.content && (ev.content.trim().startsWith("$ ") || ev.content.trim().startsWith("run_bash(")));
 
             if (isToolOrCmd) {
               const next = events[i + 1];
@@ -2878,12 +2886,37 @@
           const raw = event.content;
 
           // Simple, clean terminal command display with collapsible result appendage
-          if (event.event_type === "command_exec" || raw.trim().startsWith("$ ")) {
+          const isRunBash = raw.startsWith("run_bash(");
+          const isDollarCmd = raw.trim().startsWith("$ ");
+          if (event.event_type === "command_exec" || isDollarCmd || isRunBash) {
+            let cmdText = raw;
+            if (isRunBash) {
+              const m = raw.match(/^run_bash\(([\s\S]*)\)$/);
+              cmdText = "$ " + (m ? m[1] : raw.slice(9, -1));
+            } else if (!cmdText.trim().startsWith("$ ")) {
+              cmdText = "$ " + cmdText;
+            }
+
             let resultAppendage = "";
             if (event.attached_result) {
-              const res = event.attached_result;
-              const isSuccess = /exit code:\s*0/i.test(res);
-              const hasError = /exit code:\s*[1-9]/i.test(res) || /error/i.test(res);
+              let res = event.attached_result;
+              let isSuccess = /exit code:\s*0/i.test(res);
+              let hasError = /exit code:\s*[1-9]/i.test(res) || /error/i.test(res);
+
+              // Parse JSON result from DeepSeek if present
+              try {
+                if (typeof res === "string" && res.trim().startsWith("{") && res.trim().endsWith("}")) {
+                  const p = JSON.parse(res);
+                  if (p.exit_code !== undefined) {
+                    isSuccess = p.exit_code === 0;
+                    hasError = p.exit_code !== 0;
+                  }
+                  if (p.output !== undefined) {
+                    res = p.output;
+                  }
+                }
+              } catch(e) {}
+
               const badgeClass = isSuccess 
                 ? 'bg-emerald-950/80 text-emerald-400 border border-emerald-800/60' 
                 : 'bg-rose-950/80 text-rose-400 border border-rose-800/60';
@@ -2911,9 +2944,41 @@
                   <div class="text-stone-500 text-[10px] mb-1 font-semibold flex items-center gap-1.5 select-none">
                     <i class="fa-solid fa-terminal text-[9px] text-stone-400"></i> Terminal
                   </div>
-                  <div class="text-emerald-400 whitespace-pre-wrap">${this.escapeHtml(raw)}</div>
+                  <div class="text-emerald-400 whitespace-pre-wrap">${this.escapeHtml(cmdText)}</div>
                 </div>
                 ${resultAppendage}
+              </div>
+            `;
+          }
+
+          // Standalone Tool Result or Command Result (prevent raw JSON dumping)
+          if (event.event_type === "tool_result" || event.event_type === "command_result") {
+            let parsedText = raw;
+            let exitBadge = "";
+            try {
+              if (raw.trim().startsWith("{") && raw.trim().endsWith("}")) {
+                const parsed = JSON.parse(raw);
+                if (parsed.output !== undefined) {
+                  parsedText = parsed.output;
+                  const isOk = parsed.exit_code === 0 || parsed.success === true;
+                  exitBadge = isOk 
+                    ? '<span class="px-1.5 py-0.5 rounded text-[9px] font-semibold bg-emerald-950/80 text-emerald-400 border border-emerald-800/60">Exit 0</span>' 
+                    : '<span class="px-1.5 py-0.5 rounded text-[9px] font-semibold bg-rose-950/80 text-rose-400 border border-rose-800/60">Exit ' + (parsed.exit_code || 1) + '</span>';
+                } else if (parsed.path) {
+                  parsedText = (parsed.success ? "File updated: " : "Error at: ") + parsed.path;
+                } else if (parsed.error) {
+                  parsedText = "Error: " + parsed.error;
+                }
+              }
+            } catch(e) {}
+
+            return `
+              <div class="my-1.5 p-3 rounded-xl bg-stone-900/60 border border-stone-800 font-mono text-[11px] text-stone-300">
+                <div class="flex items-center justify-between mb-1.5 text-stone-500 text-[10px]">
+                  <span class="flex items-center gap-1.5 font-medium"><i class="fa-solid fa-square-poll-vertical text-sapphire"></i> Output</span>
+                  ${exitBadge}
+                </div>
+                <div class="whitespace-pre-wrap leading-relaxed max-h-56 overflow-y-auto">${this.escapeHtml(parsedText)}</div>
               </div>
             `;
           }
@@ -2922,6 +2987,16 @@
           if (event.event_type === "tool_call") {
             let resultAppendage = "";
             if (event.attached_result) {
+              let res = event.attached_result;
+              try {
+                if (typeof res === "string" && res.trim().startsWith("{") && res.trim().endsWith("}")) {
+                  const p = JSON.parse(res);
+                  if (p.output !== undefined) res = p.output;
+                  else if (p.path) res = (p.success ? "File updated: " : "Error at: ") + p.path;
+                  else if (p.error) res = "Error: " + p.error;
+                }
+              } catch(e) {}
+
               resultAppendage = `
                 <details class="group/tool mt-1.5 border border-stone-800 rounded-lg bg-stone-900/50 overflow-hidden">
                   <summary class="px-3.5 py-2 flex items-center justify-between cursor-pointer hover:bg-stone-800/60 transition select-none text-[10px] text-stone-400">
@@ -2932,7 +3007,7 @@
                     <span class="text-stone-500 text-[9px] font-sans group-open/tool:hidden">Click to expand</span>
                     <span class="text-stone-500 text-[9px] font-sans hidden group-open/tool:inline">Click to collapse</span>
                   </summary>
-                  <div class="px-4 py-3 border-t border-stone-800/60 bg-stone-950 text-stone-300 text-[10px] whitespace-pre-wrap overflow-x-auto leading-relaxed max-h-60 overflow-y-auto">${this.escapeHtml(event.attached_result)}</div>
+                  <div class="px-4 py-3 border-t border-stone-800/60 bg-stone-950 text-stone-300 text-[10px] whitespace-pre-wrap overflow-x-auto leading-relaxed max-h-60 overflow-y-auto">${this.escapeHtml(res)}</div>
                 </details>
               `;
             }
@@ -3015,8 +3090,15 @@
                 this.isAgentThinking = false;
                 this.thinkingText = '';
 
+                // Prevent duplicate event insertion
+                const isDup = this.taskEvents.some(e => 
+                  (msg.event_id && e.id === msg.event_id) ||
+                  (e.sender === msg.sender && e.event_type === msg.event_type && e.content === msg.content)
+                );
+                if (isDup) return;
+
                 this.taskEvents.push({
-                  id: Date.now(),
+                  id: msg.event_id || Date.now(),
                   sender: msg.sender,
                   event_type: msg.event_type,
                   content: msg.content,

@@ -521,10 +521,11 @@ async def intervene(task_id: int, req: InterveneRequest):
     is_gemini = bool(re.search(r'@gemini\b', instruction, re.IGNORECASE) or re.match(r'^\s*gemini\b', instruction, re.IGNORECASE))
 
     # 1. Record the human intervention event
-    await db.add_task_event(task_id, "user", "intervention", instruction)
+    event_id = await db.add_task_event(task_id, "user", "intervention", instruction)
     await broadcast_event({
         "type": "agent_event",
         "task_id": task_id,
+        "event_id": event_id,
         "sender": "user",
         "event_type": "intervention",
         "content": instruction
