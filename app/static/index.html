@@ -1053,42 +1053,129 @@
 
       <!-- Main Explorer Area: File List (Left) & Preview Pane (Right) -->
       <div class="flex-1 flex overflow-hidden">
-        <!-- File List -->
-        <div class="w-64 border-r border-stone-200 dark:border-stone-800 overflow-y-auto bg-stone-50/50 dark:bg-stone-950/40 p-2 space-y-1">
-          <div class="px-2 py-1 text-[10px] font-bold uppercase tracking-wider text-slate-400 flex items-center justify-between">
-            <span>Files (<span x-text="filesModal.files.length"></span>)</span>
-            <button @click="loadTaskFiles(filesModal.task?.id)" class="hover:text-slate-700 dark:hover:text-white" title="Refresh files"><i class="fa-solid fa-arrows-rotate text-[10px]"></i></button>
+        <!-- File List / Tree Explorer -->
+        <div class="w-72 sm:w-80 border-r border-stone-200 dark:border-stone-800 overflow-y-auto bg-stone-50/50 dark:bg-stone-950/40 p-2 space-y-1 shrink-0 flex flex-col">
+          <div class="px-2 py-1 text-[10px] font-bold uppercase tracking-wider text-slate-400 flex items-center justify-between border-b border-stone-200 dark:border-stone-800/80 pb-1.5 shrink-0">
+            <span class="flex items-center gap-1.5 text-slate-600 dark:text-stone-300">
+              <i class="fa-solid fa-folder-tree text-sapphire dark:text-sky-400"></i>
+              <span>Explorer (<span x-text="filesModal.files.length"></span>)</span>
+            </span>
+            <div class="flex items-center space-x-1">
+              <button 
+                type="button"
+                @click="filesModal.viewMode = filesModal.viewMode === 'tree' ? 'flat' : 'tree'" 
+                class="px-1.5 py-0.5 rounded hover:bg-stone-200 dark:hover:bg-stone-800 text-slate-500 dark:text-stone-400 transition" 
+                :title="filesModal.viewMode === 'tree' ? 'Switch to flat list view' : 'Switch to folder tree view'">
+                <i :class="filesModal.viewMode === 'tree' ? 'fa-solid fa-list' : 'fa-solid fa-folder-tree'"></i>
+              </button>
+              <button 
+                type="button"
+                x-show="filesModal.viewMode === 'tree'"
+                @click="toggleAllDirs()" 
+                class="px-1.5 py-0.5 rounded hover:bg-stone-200 dark:hover:bg-stone-800 text-slate-500 dark:text-stone-400 transition" 
+                title="Expand / Collapse all folders">
+                <i class="fa-solid fa-arrows-up-down text-[10px]"></i>
+              </button>
+              <button 
+                type="button"
+                @click="loadTaskFiles(filesModal.task?.id)" 
+                class="px-1.5 py-0.5 rounded hover:bg-stone-200 dark:hover:bg-stone-800 text-slate-500 dark:text-stone-400 transition" 
+                title="Refresh files">
+                <i class="fa-solid fa-arrows-rotate text-[10px]"></i>
+              </button>
+            </div>
           </div>
 
-          <template x-for="file in filesModal.files" :key="file.rel_path || file.name">
-            <button 
-              @click="selectTaskFile(file)"
-              class="w-full text-left px-2.5 py-2 rounded-xl text-xs font-mono transition flex items-center justify-between group"
-              :class="(filesModal.selectedFile?.rel_path || filesModal.selectedFile?.name) === (file.rel_path || file.name) ? 'bg-sapphire text-white shadow-sm font-semibold' : 'text-slate-700 dark:text-stone-300 hover:bg-stone-200/70 dark:hover:bg-stone-800/80'">
-              <span class="truncate flex items-center gap-1.5">
-                <i class="text-[11px]" :class="[
-                  (filesModal.selectedFile?.rel_path || filesModal.selectedFile?.name) === (file.rel_path || file.name) ? 'text-white' : (isMarkdownFile(file) ? 'text-sky-400' : 'text-sapphire'),
-                  isMarkdownFile(file) ? 'fa-brands fa-markdown' : 'fa-regular fa-file-code'
-                ]"></i>
-                <span x-text="file.name"></span>
-              </span>
-              <span class="text-[10px] opacity-70 font-sans" x-text="formatBytes(file.size)"></span>
-            </button>
-          </template>
+          <!-- Content List (Tree or Flat) -->
+          <div class="flex-1 overflow-y-auto space-y-0.5 min-h-0 py-1">
+            <!-- Tree View -->
+            <div x-show="filesModal.viewMode === 'tree'" class="space-y-0.5">
+              <template x-for="item in getVisibleTreeNodes()" :key="item.path">
+                <div>
+                  <!-- Directory Node -->
+                  <template x-if="item.type === 'dir'">
+                    <button 
+                      type="button"
+                      @click="toggleDir(item.path)"
+                      :style="{ paddingLeft: (item.depth * 14 + 6) + 'px' }"
+                      class="w-full text-left py-1.5 pr-2 rounded-lg text-xs font-mono transition flex items-center justify-between text-slate-700 dark:text-stone-300 hover:bg-stone-200/70 dark:hover:bg-stone-800/80 group select-none">
+                      <span class="truncate flex items-center gap-1.5">
+                        <i class="fa-solid text-[8px] w-3 text-center transition-transform text-slate-400 dark:text-stone-500" :class="item.isCollapsed ? 'fa-chevron-right' : 'fa-chevron-down'"></i>
+                        <i class="fa-solid text-[12px] text-amber-500 dark:text-amber-400" :class="item.isCollapsed ? 'fa-folder' : 'fa-folder-open'"></i>
+                        <span class="font-medium text-slate-800 dark:text-stone-200 truncate" x-text="item.name"></span>
+                      </span>
+                      <span class="text-[9px] text-slate-400 font-sans px-1 rounded bg-stone-200/60 dark:bg-stone-800/60 shrink-0" x-text="item.childCount"></span>
+                    </button>
+                  </template>
 
-          <div x-show="filesModal.files.length === 0" class="p-6 text-center text-xs text-slate-400">
-            <i class="fa-regular fa-folder-open text-xl mb-1 block"></i>
-            No files created yet
+                  <!-- File Node -->
+                  <template x-if="item.type === 'file'">
+                    <button 
+                      type="button"
+                      @click="selectTaskFile(item.file)"
+                      :style="{ paddingLeft: (item.depth * 14 + 20) + 'px' }"
+                      class="w-full text-left py-1.5 pr-2 rounded-lg text-xs font-mono transition flex items-center justify-between group"
+                      :class="(filesModal.selectedFile?.rel_path || filesModal.selectedFile?.name) === item.path ? 'bg-sapphire text-white shadow-sm font-semibold' : 'text-slate-700 dark:text-stone-300 hover:bg-stone-200/70 dark:hover:bg-stone-800/80'">
+                      <span class="truncate flex items-center gap-1.5">
+                        <i class="text-[11px] shrink-0" :class="[
+                          (filesModal.selectedFile?.rel_path || filesModal.selectedFile?.name) === item.path ? 'text-white' : (isMarkdownFile(item.file) ? 'text-sky-400' : 'text-sapphire dark:text-blue-400'),
+                          isMarkdownFile(item.file) ? 'fa-brands fa-markdown' : 'fa-regular fa-file-code'
+                        ]"></i>
+                        <span class="truncate" x-text="item.name"></span>
+                      </span>
+                      <span class="text-[10px] opacity-70 font-sans ml-1 shrink-0" x-text="formatBytes(item.file.size)"></span>
+                    </button>
+                  </template>
+                </div>
+              </template>
+            </div>
+
+            <!-- Flat List View -->
+            <div x-show="filesModal.viewMode === 'flat'" class="space-y-0.5">
+              <template x-for="file in filesModal.files" :key="file.rel_path || file.name">
+                <button 
+                  type="button"
+                  @click="selectTaskFile(file)"
+                  class="w-full text-left px-2.5 py-1.5 rounded-lg text-xs font-mono transition flex items-center justify-between group"
+                  :class="(filesModal.selectedFile?.rel_path || filesModal.selectedFile?.name) === (file.rel_path || file.name) ? 'bg-sapphire text-white shadow-sm font-semibold' : 'text-slate-700 dark:text-stone-300 hover:bg-stone-200/70 dark:hover:bg-stone-800/80'">
+                  <span class="truncate flex items-center gap-1.5">
+                    <i class="text-[11px] shrink-0" :class="[
+                      (filesModal.selectedFile?.rel_path || filesModal.selectedFile?.name) === (file.rel_path || file.name) ? 'text-white' : (isMarkdownFile(file) ? 'text-sky-400' : 'text-sapphire dark:text-blue-400'),
+                      isMarkdownFile(file) ? 'fa-brands fa-markdown' : 'fa-regular fa-file-code'
+                    ]"></i>
+                    <span class="truncate" x-text="file.rel_path || file.name"></span>
+                  </span>
+                  <span class="text-[10px] opacity-70 font-sans ml-1 shrink-0" x-text="formatBytes(file.size)"></span>
+                </button>
+              </template>
+            </div>
+
+            <div x-show="filesModal.files.length === 0" class="p-6 text-center text-xs text-slate-400">
+              <i class="fa-regular fa-folder-open text-xl mb-1 block"></i>
+              No files created yet
+            </div>
           </div>
         </div>
 
         <!-- File Content Preview Pane -->
-        <div class="flex-1 flex flex-col bg-stone-900 text-stone-100 overflow-hidden font-mono">
-          <div class="px-4 py-2 bg-stone-950 border-b border-stone-800 flex items-center justify-between text-xs text-stone-400 shrink-0">
-            <div class="flex items-center gap-2 min-w-0">
+        <div class="flex-1 flex flex-col bg-stone-900 text-stone-100 overflow-hidden font-mono min-w-0">
+          <div class="px-4 py-2 bg-stone-950 border-b border-stone-800 flex items-center justify-between text-xs text-stone-400 shrink-0 gap-2">
+            <div class="flex items-center gap-2 min-w-0 flex-1">
               <span class="w-2.5 h-2.5 rounded-full shrink-0" :class="isMarkdownFile(filesModal.selectedFile) ? 'bg-sky-400' : 'bg-emerald-500'"></span>
-              <span class="text-white font-semibold truncate" x-text="filesModal.selectedFile ? filesModal.selectedFile.name : 'Select a file to preview'"></span>
-              <span x-show="isMarkdownFile(filesModal.selectedFile)" class="shrink-0 px-1.5 py-0.5 rounded text-[10px] font-mono bg-sky-950/80 text-sky-400 border border-sky-800/60 font-semibold">MD</span>
+              <template x-if="filesModal.selectedFile">
+                <div class="flex items-center gap-1.5 text-xs truncate select-text min-w-0">
+                  <template x-for="(part, idx) in getSelectedFileBreadcrumbs()" :key="idx">
+                    <span class="flex items-center gap-1.5 shrink-0">
+                      <span :class="idx === getSelectedFileBreadcrumbs().length - 1 ? 'text-white font-semibold' : 'text-stone-400 font-normal'" x-text="part"></span>
+                      <span x-show="idx < getSelectedFileBreadcrumbs().length - 1" class="text-stone-600">/</span>
+                    </span>
+                  </template>
+                  <span x-show="isMarkdownFile(filesModal.selectedFile)" class="ml-1 shrink-0 px-1.5 py-0.5 rounded text-[10px] font-mono bg-sky-950/80 text-sky-400 border border-sky-800/60 font-semibold">MD</span>
+                </div>
+              </template>
+              <template x-if="!filesModal.selectedFile">
+                <span class="text-stone-400">Select a file to preview</span>
+              </template>
             </div>
 
             <div class="flex items-center space-x-2 shrink-0">
@@ -1738,13 +1825,16 @@
           task: null,
           workspacePath: '',
           files: [],
+          directories: [],
           selectedFile: null,
           fileContent: '',
           loadingContent: false,
           isBinary: false,
           copiedSsh: false,
           copiedContent: false,
-          mdViewMode: 'rendered'
+          mdViewMode: 'rendered',
+          viewMode: 'tree',
+          collapsedDirs: {}
         },
 
         // Delete Task Confirmation Modal
@@ -2412,6 +2502,8 @@
           this.filesModal.selectedFile = null;
           this.filesModal.fileContent = '';
           this.filesModal.mdViewMode = 'rendered';
+          this.filesModal.viewMode = 'tree';
+          this.filesModal.collapsedDirs = {};
           this.filesModal.show = true;
           await this.loadTaskFiles(task.id);
         },
@@ -2421,6 +2513,7 @@
             const res = await fetch(`/api/tasks/${taskId}/files`);
             const data = await res.json();
             this.filesModal.files = data.files || [];
+            this.filesModal.directories = data.directories || [];
             if (data.path) {
               this.filesModal.workspacePath = data.path;
             }
@@ -2564,6 +2657,141 @@
           if (bytes < 1024) return bytes + ' B';
           if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
           return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+        },
+
+        toggleDir(dirPath) {
+          this.filesModal.collapsedDirs[dirPath] = !this.filesModal.collapsedDirs[dirPath];
+        },
+
+        toggleAllDirs() {
+          const visible = this.getVisibleTreeNodes();
+          const anyOpen = visible.some(n => n.type === 'dir' && !n.isCollapsed);
+          const allDirs = this.getAllTreeDirs();
+          const newCollapsed = {};
+          if (anyOpen) {
+            allDirs.forEach(d => { newCollapsed[d] = true; });
+          }
+          this.filesModal.collapsedDirs = newCollapsed;
+        },
+
+        getAllTreeDirs() {
+          const dirs = new Set(this.filesModal.directories || []);
+          (this.filesModal.files || []).forEach(f => {
+            const rel = f.rel_path || f.name || '';
+            const parts = rel.split('/').filter(Boolean);
+            parts.pop();
+            let curr = '';
+            parts.forEach(p => {
+              curr = curr ? `${curr}/${p}` : p;
+              dirs.add(curr);
+            });
+          });
+          return Array.from(dirs);
+        },
+
+        getSelectedFileBreadcrumbs() {
+          if (!this.filesModal.selectedFile) return [];
+          const rel = this.filesModal.selectedFile.rel_path || this.filesModal.selectedFile.name || '';
+          return rel.split('/').filter(Boolean);
+        },
+
+        getVisibleTreeNodes() {
+          const files = this.filesModal.files || [];
+          const dirs = this.filesModal.directories || [];
+          const collapsed = this.filesModal.collapsedDirs || {};
+
+          // Build hierarchical tree
+          const root = { type: 'dir', name: '', path: '', children: {} };
+
+          // Add explicit directories
+          dirs.forEach(d => {
+            const parts = d.split('/').filter(Boolean);
+            let curr = root;
+            let currPath = '';
+            parts.forEach(part => {
+              currPath = currPath ? `${currPath}/${part}` : part;
+              if (!curr.children[part]) {
+                curr.children[part] = {
+                  type: 'dir',
+                  name: part,
+                  path: currPath,
+                  children: {}
+                };
+              }
+              curr = curr.children[part];
+            });
+          });
+
+          // Add files (and any implicit ancestor directories)
+          files.forEach(f => {
+            const rel = f.rel_path || f.name || '';
+            const parts = rel.split('/').filter(Boolean);
+            const fileName = parts.pop();
+            let curr = root;
+            let currPath = '';
+            parts.forEach(part => {
+              currPath = currPath ? `${currPath}/${part}` : part;
+              if (!curr.children[part]) {
+                curr.children[part] = {
+                  type: 'dir',
+                  name: part,
+                  path: currPath,
+                  children: {}
+                };
+              }
+              curr = curr.children[part];
+            });
+            if (fileName) {
+              curr.children[fileName] = {
+                type: 'file',
+                name: fileName,
+                path: rel,
+                file: f
+              };
+            }
+          });
+
+          // Flatten tree into visible nodes with depth
+          const flatten = (node, depth) => {
+            const res = [];
+            const keys = Object.keys(node.children).sort((a, b) => {
+              const nodeA = node.children[a];
+              const nodeB = node.children[b];
+              if (nodeA.type === nodeB.type) {
+                return a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' });
+              }
+              return nodeA.type === 'dir' ? -1 : 1;
+            });
+
+            keys.forEach(k => {
+              const item = node.children[k];
+              if (item.type === 'dir') {
+                const isCol = !!collapsed[item.path];
+                res.push({
+                  type: 'dir',
+                  name: item.name,
+                  path: item.path,
+                  depth: depth,
+                  isCollapsed: isCol,
+                  childCount: Object.keys(item.children).length
+                });
+                if (!isCol) {
+                  res.push(...flatten(item, depth + 1));
+                }
+              } else {
+                res.push({
+                  type: 'file',
+                  name: item.name,
+                  path: item.path,
+                  depth: depth,
+                  file: item.file
+                });
+              }
+            });
+            return res;
+          };
+
+          return flatten(root, 0);
         },
 
         // Delete Task

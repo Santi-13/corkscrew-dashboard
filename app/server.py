@@ -13,7 +13,10 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 import db
-from config import TASKS_DIR, DEFAULT_MODEL, MAX_ITERATIONS, GEMINI_API_KEY, OLLAMA_BASE_URL, DEEPSEEK_API_KEY, DEEPSEEK_DEFAULT_MODEL
+from config import (
+    TASKS_DIR, DEFAULT_MODEL, MAX_ITERATIONS, GEMINI_API_KEY, 
+    OLLAMA_BASE_URL, DEEPSEEK_API_KEY, DEEPSEEK_DEFAULT_MODEL, is_ignored_path
+)
 from queue_worker import TaskQueueWorker, active_websockets, broadcast_event
 
 worker_instance = TaskQueueWorker()
@@ -123,25 +126,38 @@ async def list_task_files(task_id: int):
     
     p = Path(task["workspace_dir"])
     if not p.exists():
-        return {"files": [], "path": str(p)}
+        return {"files": [], "directories": [], "path": str(p)}
     
     file_list = []
-    for root, _, files in os.walk(p):
+    dir_list = []
+    for root, dirs, files in os.walk(p):
+        # Prune ignored directories in-place so os.walk does not descend into them
+        dirs[:] = [
+            d for d in dirs 
+            if not is_ignored_path(d, str((Path(root) / d).relative_to(p)))
+        ]
+        for d in dirs:
+            dir_list.append(str((Path(root) / d).relative_to(p)))
+
         for f in files:
             full = Path(root) / f
             rel = full.relative_to(p)
+            rel_str = str(rel)
+            if is_ignored_path(f, rel_str):
+                continue
             try:
                 stat = full.stat()
                 file_list.append({
                     "name": f,
-                    "rel_path": str(rel),
+                    "rel_path": rel_str,
                     "size": stat.st_size,
                     "modified": stat.st_mtime
                 })
             except Exception:
                 pass
     file_list.sort(key=lambda x: x["rel_path"])
-    return {"files": file_list, "path": str(p)}
+    dir_list.sort()
+    return {"files": file_list, "directories": dir_list, "path": str(p)}
 
 @app.get("/api/tasks/{task_id}/files/content")
 async def get_task_file_content(task_id: int, file: str):
@@ -155,6 +171,8 @@ async def get_task_file_content(task_id: int, file: str):
         raise HTTPException(status_code=403, detail="Access denied")
     if not target.exists() or not target.is_file():
         raise HTTPException(status_code=404, detail="File not found")
+    if is_ignored_path(target.name, file):
+        raise HTTPException(status_code=403, detail="Access to this file is restricted")
     
     # Check for binary file extensions and null bytes
     binary_extensions = {
@@ -185,10 +203,17 @@ async def download_task_zip(task_id: int):
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
         if p.exists():
-            for root, _, files in os.walk(p):
+            for root, dirs, files in os.walk(p):
+                dirs[:] = [
+                    d for d in dirs 
+                    if not is_ignored_path(d, str((Path(root) / d).relative_to(p)))
+                ]
                 for f in files:
+                    rel = (Path(root) / f).relative_to(p)
+                    if is_ignored_path(f, str(rel)):
+                        continue
                     fp = Path(root) / f
-                    zf.write(fp, arcname=fp.relative_to(p))
+                    zf.write(fp, arcname=rel)
     buf.seek(0)
     headers = {"Content-Disposition": f'attachment; filename="task_{task_id}_workspace.zip"'}
     return Response(content=buf.getvalue(), media_type="application/zip", headers=headers)
